@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SMS Spam Detector</title>
+<style>
+:root{--bg:#f3f5f2;--surface:#fff;--ink:#16211b;--muted:#5d6b63;--line:#d5ddd7;--spam:#c2410c;--ham:#1f7a4d;--spam-bg:#fde8dc;--ham-bg:#dff3e7;--accent:#16211b;--accent-ink:#fff;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1511;--surface:#18201b;--ink:#e8efe9;--muted:#9aa89f;--line:#2b362f;--spam:#fb923c;--ham:#4ade80;--spam-bg:#3a1f10;--ham-bg:#123222;--accent:#e8efe9;--accent-ink:#0f1511;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0f1511;--surface:#18201b;--ink:#e8efe9;--muted:#9aa89f;--line:#2b362f;--spam:#fb923c;--ham:#4ade80;--spam-bg:#3a1f10;--ham-bg:#123222;--accent:#e8efe9;--accent-ink:#0f1511;color-scheme:dark}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 "Iowan Old Style","Palatino Linotype",Georgia,serif}
+main{max-width:640px;margin:0 auto;padding:24px 18px 48px}
+h1{font-size:2rem;line-height:1.15;margin:0 0 6px;letter-spacing:-.01em}
+.sub{color:var(--muted);margin:0 0 22px;max-width:52ch}
+textarea{width:100%;min-height:110px;padding:12px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink);font:inherit;resize:vertical}
+textarea:focus-visible,button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+button{font:inherit;cursor:pointer;border-radius:6px;border:1px solid var(--line);background:var(--surface);color:var(--ink);padding:8px 12px}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600;padding:10px 18px}
+button.chip{font-size:.85rem;padding:5px 10px;color:var(--muted)}
+.label{font-size:.85rem;color:var(--muted);margin:14px 0 4px}
+#result{margin-top:18px;border:1px solid var(--line);border-radius:6px;background:var(--surface);padding:16px;display:none}
+.verdict{font-size:1.6rem;font-weight:700;margin:0}
+.verdict.spam{color:var(--spam)}.verdict.ham{color:var(--ham)}
+.bar{height:12px;border-radius:6px;background:var(--ham-bg);overflow:hidden;margin:10px 0 4px}
+.bar>div{height:100%;background:var(--spam);transition:width .35s}
+.scale{display:flex;justify-content:space-between;font-size:.8rem;color:var(--muted)}
+.words{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 0}
+.w{padding:2px 9px;border-radius:99px;font-size:.88rem}
+.w.s{background:var(--spam-bg);color:var(--spam)}.w.h{background:var(--ham-bg);color:var(--ham)}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:26px 0 6px}
+.stat{border-top:2px solid var(--ink);padding-top:6px}
+.stat b{display:block;font-size:1.35rem}.stat span{font-size:.8rem;color:var(--muted)}
+details{margin-top:22px;border-top:1px solid var(--line);padding-top:12px;color:var(--muted)}
+summary{cursor:pointer;color:var(--ink);font-weight:600}
+code{font-family:ui-monospace,Menlo,monospace;font-size:.85em}
+#msg{min-height:1.2em;font-size:.9rem;color:var(--muted)}
+</style>
+</head>
+<body>
+<main>
+<h1>Is this text spam?</h1>
+<p class="sub">A Naive Bayes classifier trained in your browser on labeled SMS messages. Paste a message and see why it was flagged.</p>
+
+<textarea id="in" placeholder="Paste an SMS here…" aria-label="SMS message"></textarea>
+<div class="row">
+<button class="primary" id="go">Check message</button>
+<button id="clr">Clear</button>
+</div>
+<div class="label">Try an example</div>
+<div class="row" id="ex"></div>
+
+<div id="result" aria-live="polite">
+<p class="verdict" id="verdict"></p>
+<div class="bar"><div id="fill"></div></div>
+<div class="scale"><span>Not spam</span><span id="pct"></span><span>Spam</span></div>
+<div class="label">Words pushing toward spam</div><div class="words" id="sw"></div>
+<div class="label">Words pushing toward not spam</div><div class="words" id="hw"></div>
+<div class="label">Wrong? Teach the model and it retrains instantly.</div>
+<div class="row"><button id="ts">This is spam</button><button id="th">This is not spam</button></div>
+<div id="msg"></div>
+</div>
+
+<div class="stats">
+<div class="stat"><b id="s1">–</b><span>Accuracy</span></div>
+<div class="stat"><b id="s2">–</b><span>Precision</span></div>
+<div class="stat"><b id="s3">–</b><span>Recall</span></div>
+<div class="stat"><b id="s4">–</b><span>Messages</span></div>
+</div>
+<div class="label">Scores come from a held-out 20% test split of the built-in dataset.</div>
+
+<details>
+<summary>How it works</summary>
+<p>Each message is lowercased and split into words. Links, long numbers and currency symbols become special tokens, and common filler words are dropped. The model counts how often each word appears in spam and in normal messages, then multiplies those word probabilities (as log sums) with Laplace smoothing. The higher total wins.</p>
+<p>The built-in dataset is a small hand-written sample in the style of the UCI SMS Spam Collection. To go further, swap in the full dataset and retrain.</p>
+</details>
+</main>
+
+<script>
+const SPAM = [
+"WINNER! You have been selected to receive a £900 prize reward. Call 09061701461 now to claim",
+"Free entry in 2 a weekly competition to win FA Cup tickets. Text FA to 87121 to receive entry",
+"URGENT! Your mobile number has won a £2000 bonus caller prize. Call 09050000555 to claim",
+"Congratulations! You have won a free iPhone. Click http://bit.ly/win-now to claim your gift",
+"Your account has been suspended. Verify your details immediately at http://secure-bank-login.com",
+"Free msg: Get 3 months of unlimited data at no cost. Reply YES to claim your offer today",
+"Claim your cash prize of $1000 now! Limited time offer, text WIN to 80082",
+"You have been chosen for a free holiday to Spain. Call now to claim, terms apply",
+"Get a loan approved in minutes with no credit check. Apply now at www.fastcash-loans.com",
+"Hot singles in your area want to chat! Text CHAT to 69888 for free, 18+ only",
+"Final notice: your package could not be delivered. Pay the fee at http://track-parcel.info",
+"Exclusive deal! 50% off all phones this weekend only. Reply STOP to opt out",
+"Your bank card has been blocked. Call 08712400603 urgently to unlock your account",
+"Win a brand new PlayStation! Text GAME to 81010 now. Std txt rates apply",
+"You are a lucky winner of our monthly lottery draw. Send your bank details to claim £5000",
+"Cheap meds online, no prescription needed. Order now and get free shipping",
+"Congratulations, you qualify for a free cruise. Call 09066350750 to claim your reward today",
+"Earn $500 a day working from home! Click here to start, no experience required",
+"URGENT: Your subscription renews today for £9.99. To cancel text STOP to 88600",
+"Free ringtones! Text TONE to 80878 to get the latest hits. Subscription £3 per week",
+"Dear customer, you have won a Walmart gift card worth $500. Claim at http://gift-card-now.com",
+"Last chance to claim your tax refund of £342. Click the link to confirm your details",
+"Bonus alert! Deposit now and get 200% free credit at our casino. Play now, win big",
+"Your PayPal account is limited. Confirm your identity within 24 hours at http://paypa1-verify.com",
+"Txt MONEY to 85023 now to receive £250 cash. Offer ends tonight, hurry",
+"Guaranteed weight loss in 7 days! Order your free trial bottle today, just pay shipping",
+"Mobile customer, you have a free upgrade waiting. Call 08000930705 to collect your new handset",
+"Act now! Exclusive investment opportunity, double your money in 30 days guaranteed",
+"You have won a £1000 shopping voucher. To claim, reply with your name and address now",
+"Selected for a free sample of our new product. Click http://free-stuff-today.net to order"
+];
+const HAM = [
+"Hey, are we still meeting for lunch tomorrow at noon?",
+"I will be home by 7, can you pick up some milk on your way?",
+"Ok, see you at the station in ten minutes",
+"Thanks for dinner last night, it was really lovely",
+"Can you send me the notes from today's lecture please?",
+"Running a bit late, the bus is stuck in traffic. Start without me",
+"Happy birthday! Hope you have an amazing day, let's celebrate this weekend",
+"Did you get my email about the project deadline?",
+"Mom says dinner is ready, come down when you can",
+"Let me know when you reach the airport and I will come get you",
+"I am at the gym, will call you back after my workout",
+"Don't forget to bring your charger tomorrow, mine broke",
+"Sorry I missed your call, I was in a meeting. What's up?",
+"The movie starts at 8, I booked the seats near the back",
+"Can we move our call to 3pm? Something came up at work",
+"Just landed, the flight was fine. Heading to the hotel now",
+"Please remember to submit the report before Friday evening",
+"Good morning! Hope you slept well, talk to you later today",
+"I left my keys at your place, can I come by after class?",
+"Great game last night! We should play again next week",
+"What time does the doctor's appointment start on Thursday?",
+"Grandma is feeling much better, she wants to see you on Sunday",
+"I'll bring the snacks if you bring the drinks for the party",
+"The meeting has been rescheduled to Monday morning, same room",
+"Thanks for helping me move, I owe you a pizza",
+"Are you coming to the study group tonight? We're in the library",
+"Call me when you get a chance, nothing urgent",
+"I loved that book you recommended, can I borrow the next one?",
+"Dinner at my place on Saturday? I'm making pasta",
+"Your order of two coffees is ready at the counter, see you soon",
+"Traffic is bad, I'll be there in about twenty minutes",
+"Can you check if the landlord replied about the rent?",
+"Let's catch up this weekend, it has been too long",
+"I finished the assignment, sending it to you now for review",
+"Remember to water the plants while I am away please",
+"Dad's flight lands at 6, I will go pick him up",
+"That joke was hilarious, I'm still laughing about it",
+"See you at practice tomorrow, don't forget your boots",
+"I'll text you the address when I get there",
+"Do you want to grab coffee after work today?"
+];
+const EXAMPLES = [
+"Congratulations! You won a free vacation. Call 09012345678 to claim your prize now",
+"Hey, can you pick me up from the station at 6?",
+"URGENT: Your account is locked. Verify at http://secure-login.net",
+"Are we still on for dinner tonight?"
+];
+const STOP = new Set("the a an and or but of to in on at for is are was were be been am i you he she it we they me my your our this that with as by from so if then do does did have has had will would can could just not no yes ok its im".split(" "));
+
+function tokenize(t){
+  return (t.toLowerCase()
+    .replace(/https?:\/\/\S+|www\.\S+/g," urltok ")
+    .replace(/\b\d{5,}\b/g," longnum ")
+    .replace(/[£$€]/g," moneysym ")
+    .match(/[a-z]+/g)||[]).filter(w=>w.length>1&&!STOP.has(w));
+}
+
+function Model(){this.c={spam:{},ham:{}};this.tot={spam:0,ham:0};this.docs={spam:0,ham:0};this.vocab=new Set();}
+Model.prototype.fit=function(data){
+  for(const [text,y] of data){
+    this.docs[y]++;
+    for(const w of tokenize(text)){this.c[y][w]=(this.c[y][w]||0)+1;this.tot[y]++;this.vocab.add(w);}
+  }
+  return this;
+};
+Model.prototype.lp=function(w,y){return Math.log(((this.c[y][w]||0)+1)/(this.tot[y]+this.vocab.size));};
+Model.prototype.predict=function(text){
+  const toks=tokenize(text), N=this.docs.spam+this.docs.ham;
+  let s=Math.log(this.docs.spam/N), h=Math.log(this.docs.ham/N);
+  const per=[];
+  for(const w of new Set(toks)){
+    if(!this.vocab.has(w))continue;
+    const d=this.lp(w,"spam")-this.lp(w,"ham");
+    s+=this.lp(w,"spam");h+=this.lp(w,"ham");
+    per.push([w,d]);
+  }
+  const p=1/(1+Math.exp(h-s));
+  return {p,per};
+};
+
+const DATA=[...SPAM.map(t=>[t,"spam"]),...HAM.map(t=>[t,"ham"])];
+let extra=[], model, last="";
+
+function shuffle(a){let s=42;const r=a.slice();for(let i=r.length-1;i>0;i--){s=(s*1664525+1013904223)%4294967296;const j=s%(i+1);[r[i],r[j]]=[r[j],r[i]];}return r;}
+
+function train(){
+  const all=DATA.concat(extra), sh=shuffle(all), cut=Math.floor(sh.length*.8);
+  const m=new Model().fit(sh.slice(0,cut));
+  let tp=0,fp=0,fn=0,tn=0;
+  for(const [t,y] of sh.slice(cut)){
+    const pred=m.predict(t).p>.5?"spam":"ham";
+    if(y==="spam"&&pred==="spam")tp++;else if(y==="ham"&&pred==="spam")fp++;else if(y==="spam")fn++;else tn++;
+  }
+  const n=tp+fp+fn+tn;
+  document.getElementById("s1").textContent=Math.round(100*(tp+tn)/n)+"%";
+  document.getElementById("s2").textContent=tp+fp?Math.round(100*tp/(tp+fp))+"%":"–";
+  document.getElementById("s3").textContent=tp+fn?Math.round(100*tp/(tp+fn))+"%":"–";
+  document.getElementById("s4").textContent=all.length;
+  model=new Model().fit(all);
+}
+
+function chips(el,list,cls){
+  el.innerHTML="";
+  if(!list.length){el.textContent="None";return;}
+  for(const [w] of list){const s=document.createElement("span");s.className="w "+cls;s.textContent=w;el.appendChild(s);}
+}
+
+function check(){
+  const text=document.getElementById("in").value.trim();
+  if(!text)return;
+  last=text;
+  const {p,per}=model.predict(text), spam=p>.5;
+  const v=document.getElementById("verdict");
+  v.textContent=spam?"Spam":"Not spam";
+  v.className="verdict "+(spam?"spam":"ham");
+  document.getElementById("fill").style.width=(p*100).toFixed(1)+"%";
+  document.getElementById("pct").textContent=(p*100).toFixed(1)+"% spam";
+  per.sort((a,b)=>b[1]-a[1]);
+  chips(document.getElementById("sw"),per.filter(x=>x[1]>0).slice(0,8),"s");
+  chips(document.getElementById("hw"),per.filter(x=>x[1]<0).reverse().slice(0,8),"h");
+  document.getElementById("msg").textContent="";
+  document.getElementById("result").style.display="block";
+}
+
+function teach(y){
+  if(!last)return;
+  extra.push([last,y]);train();check();
+  document.getElementById("msg").textContent="Learned. The model retrained with your message as "+(y==="spam"?"spam":"not spam")+".";
+}
+
+const ex=document.getElementById("ex");
+EXAMPLES.forEach(t=>{const b=document.createElement("button");b.className="chip";b.textContent=t.length>34?t.slice(0,34)+"…":t;b.onclick=()=>{document.getElementById("in").value=t;check();};ex.appendChild(b);});
+document.getElementById("go").onclick=check;
+document.getElementById("clr").onclick=()=>{document.getElementById("in").value="";document.getElementById("result").style.display="none";};
+document.getElementById("ts").onclick=()=>teach("spam");
+document.getElementById("th").onclick=()=>teach("ham");
+train();
+</script>
+</body>
+</html>
